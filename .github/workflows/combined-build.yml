@@ -1,0 +1,85 @@
+name: Combined Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: combined-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CI repository
+        uses: actions/checkout@v4
+
+      - name: Checkout ytem-plugin
+        uses: actions/checkout@v4
+        with:
+          repository: suporterfid/ytem-plugin
+          path: ytem-plugin
+          token: ${{ secrets.GH_PAT_READ }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies and build ytem-plugin
+        working-directory: ytem-plugin
+        run: |
+          npm ci
+          npm run build
+
+      - name: Checkout smartreader
+        uses: actions/checkout@v4
+        with:
+          repository: suporterfid/smartreader
+          path: smartreader
+          token: ${{ secrets.GH_PAT_READ }}
+
+      - name: Copy plugin into SmartReader
+        run: |
+          mkdir -p smartreader/SmartReaderStandalone/wwwroot/ytem
+          cp -r ytem-plugin/dist/* smartreader/SmartReaderStandalone/wwwroot/ytem/
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Mask tokens and show versions
+        run: |
+          echo "::add-mask::${{ secrets.GH_PAT_READ }}"
+          echo "::add-mask::${{ github.token }}"
+          node -v
+          dotnet --info
+          docker --version
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: smartreader
+          file: smartreader/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/suporterfid/smartreader:${{ github.sha }}
+            ghcr.io/suporterfid/smartreader:latest
+
+      - name: Smoke test
+        run: scripts/smoke-test.sh ghcr.io/suporterfid/smartreader:${{ github.sha }}
